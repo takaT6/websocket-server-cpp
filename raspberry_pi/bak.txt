@@ -1,0 +1,21 @@
+int safeSend(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize)
+// {
+// #ifdef PACKET_DUMP
+//   printf("out packet:\n");
+//   fwrite(buffer, 1, bufferSize, stdout);
+//   printf("\n");
+// #endif
+//   pthread_mutex_lock(&param->ws_mutex);
+//   ssize_t written = send(param->clientSocket, buffer, bufferSize, 0);
+//   pthread_mutex_unlock(&param->ws_mutex);
+//   if (written == -1)
+//   {
+//     return EXIT_FAILURE;
+//   }
+//   if (written != bufferSize)
+//   {
+//     return EXIT_FAILURE;
+//   }
+
+//   return EXIT_SUCCESS;
+// }
