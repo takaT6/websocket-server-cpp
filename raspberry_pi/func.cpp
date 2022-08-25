@@ -15,11 +15,20 @@
 
 #include "func.h"
 
+
+#define PACKET_DUMP
+
 LIST_HEAD(sock_list);
 WEBSOCKET_PARAM *sock = NULL;
 int sock_count = 0;
 int listenSocket = 0;
 bool isContinue = false;
+
+bool isStop = false;
+
+bool nowProcessing = false;
+
+bool hostExist = false;
 
 void error(const char *msg)
 {
@@ -81,9 +90,14 @@ void safeSendAll(const uint8_t *buffer, size_t bufferSize)
   }
 }
 
-void sendMsg(const char )
+void sendMsg(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize, char *msg)
 {
+  size_t frameSize = BUF_LEN;
+  memset(param->gBuffer, 0, BUF_LEN);
 
+  size_t len = strlen(msg);
+  wsMakeFrame((uint8_t *)msg, len, param->gBuffer, &frameSize, WS_TEXT_FRAME);
+  safeSend(param, param->gBuffer, frameSize);
 }
 
 void *clientWorker(void *param)
@@ -173,18 +187,25 @@ void *clientWorker(void *param)
       if (frameType == WS_OPENING_FRAME)
       {
         // if resource is right, generate answer handshake and send it
-        if (strcmp(hs.resource, "/echo") != 0)
-        {
-          frameSize = sprintf((char *)ths->gBuffer, "HTTP/1.1 404 Not Found\r\n\r\n");
-          safeSend(ths, ths->gBuffer, frameSize);
-          break;
-        }
-
+        // if (strcmp(hs.resource, "/echo") != 0)
+        // {
+        //   frameSize = sprintf((char *)ths->gBuffer, "HTTP/1.1 404 Not Found\r\n\r\n");
+        //   safeSend(ths, ths->gBuffer, frameSize);
+        //   break;
+        // }
+        char *route = hs.resource;
         prepareBuffer;
         wsGetHandshakeAnswer(&hs, ths->gBuffer, &frameSize);
-        freeHandshake(&hs);
         safeSend(ths, ths->gBuffer, frameSize);
         state = WS_STATE_NORMAL;
+
+        if (strcmp(route, "/checkin") == 0)
+        {
+          char msg[13] = "you are host";
+          sendMsg(ths, ths->gBuffer, frameSize, msg);
+        }
+
+        freeHandshake(&hs);
         initNewFrame;
       }
     }
@@ -206,27 +227,46 @@ void *clientWorker(void *param)
       }
       else if (frameType == WS_TEXT_FRAME)
       {
+        char stop_str[5] = "stop";
         char go_str[3] = "go";
-        if (strcmp((char *)go_str, (char *)data) == 0)
+        if (strcmp((char *)go_str, (char *)data) == 0 && !nowProcessing)
         {
-          uint8_t *recievedString = NULL;
+          isStop = false;
+          nowProcessing = true;
+          int i = 0;
+          while(!isStop)
+          {
+            
+            i++;
+            uint8_t *recievedString = NULL;
+            //タイムスタンプ
+            int timestamp = i;
+            //値
+            int value = i;
 
-          char sendMsg[] = "Hello, IF.";
-          size_t sendMsg_len = sizeof(sendMsg) - 1;
-          dataSize = sendMsg_len;
+            char sendMsg[100];
 
-          recievedString = (uint8_t *)malloc(dataSize + 1);
-          assert(recievedString);
-          memcpy(recievedString, (uint8_t *)sendMsg, dataSize);
-          
-          recievedString[dataSize] = 0;
+            sprintf(sendMsg, "{\"timestamp\":%d,\"value\":%d}", timestamp, value );
 
-          prepareBuffer;
-          wsMakeFrame(recievedString, dataSize, ths->gBuffer, &frameSize, WS_TEXT_FRAME);
-          free(recievedString);
-          safeSendAll(ths->gBuffer, frameSize);
-          initNewFrame;
+            size_t len = strlen(sendMsg);
+
+            recievedString = (uint8_t *)malloc(len + 1);
+            assert(recievedString);
+            memcpy(recievedString, (uint8_t *)sendMsg, len);
+            recievedString[len] = 0;
+            prepareBuffer;
+            wsMakeFrame(recievedString, len, ths->gBuffer, &frameSize, WS_TEXT_FRAME);
+            free(recievedString);
+            safeSendAll(ths->gBuffer, frameSize);
+            initNewFrame;
+            usleep(30000);
+          }
+          nowProcessing = false;
+        }else if (strcmp((char *)stop_str, (char *)data) == 0)
+        {
+          isStop = true;
         }
+        
         initNewFrame;
       }
     }

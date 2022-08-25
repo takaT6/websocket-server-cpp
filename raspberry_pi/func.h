@@ -25,10 +25,9 @@
 #ifndef FUNC_H
 #define	FUNC_H
 
-#define PORT 8088
 #define BUF_LEN 1024
 
-#define PACKET_DUMP
+
 #ifndef bool
 #define bool int
 #endif
@@ -63,6 +62,7 @@ extern int listenSocket;
 extern bool isContinue;
 extern list_head sock_list;
 extern WEBSOCKET_PARAM *sock;
+extern bool hostExist;
 
 void ws_stop(void);
 void error(const char *msg);
