@@ -63,6 +63,7 @@ extern bool isContinue;
 extern list_head sock_list;
 extern WEBSOCKET_PARAM *sock;
 extern bool hostExist;
+extern in_port_t hostID;
 
 void ws_stop(void);
 void error(const char *msg);

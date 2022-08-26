@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <pthread.h>
 #include <inttypes.h>
-
 #include "func.h"
 
 
@@ -23,26 +22,25 @@ WEBSOCKET_PARAM *sock = NULL;
 int sock_count = 0;
 int listenSocket = 0;
 bool isContinue = false;
-
 bool isStop = false;
-
 bool nowProcessing = false;
-
 bool hostExist = false;
 
+in_port_t hostID;
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 void error(const char *msg)
 {
   perror(msg);
   exit(EXIT_FAILURE);
 }
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 void ws_stop(void)
 {
   printf("stop connection\n");
   isContinue = false;
   close(listenSocket);
 }
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 void handler(int signo)
 {
   if (signo == SIGINT)
@@ -55,7 +53,7 @@ void handler(int signo)
     printf("catch signal hander of %d\n", signo);
   }
 }
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 int safeSend(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize)
 {
 #ifdef PACKET_DUMP
@@ -74,10 +72,9 @@ int safeSend(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize)
   {
     return EXIT_FAILURE;
   }
-
   return EXIT_SUCCESS;
 }
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 void safeSendAll(const uint8_t *buffer, size_t bufferSize)
 {
   WEBSOCKET_PARAM *data, *dend;
@@ -89,17 +86,29 @@ void safeSendAll(const uint8_t *buffer, size_t bufferSize)
     }
   }
 }
-
-void sendMsg(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize, char *msg)
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+int sendMsg(WEBSOCKET_PARAM *param, const uint8_t *buffer , const char *msg)
 {
   size_t frameSize = BUF_LEN;
   memset(param->gBuffer, 0, BUF_LEN);
 
   size_t len = strlen(msg);
   wsMakeFrame((uint8_t *)msg, len, param->gBuffer, &frameSize, WS_TEXT_FRAME);
-  safeSend(param, param->gBuffer, frameSize);
+  return safeSend(param, buffer, frameSize);
 }
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+void sendMsgToAll(const uint8_t *buffer, size_t bufferSize, char *msg)
+{
+  WEBSOCKET_PARAM *data, *dend;
+  list_for_each_entry_safe(data, dend, &sock_list, list)
+  {
+    if (sendMsg(data, buffer, msg) != EXIT_SUCCESS)
+    {
+      data->isContinue = false;
+    }
+  }
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 void *clientWorker(void *param)
 {
   WEBSOCKET_PARAM *ths = (WEBSOCKET_PARAM *)param;
@@ -152,13 +161,16 @@ void *clientWorker(void *param)
     {
       frameType = wsParseInputFrame(ths->gBuffer, readedLength, &data, &dataSize);
     }
-
     if ((frameType == WS_INCOMPLETE_FRAME && readedLength == BUF_LEN) || frameType == WS_ERROR_FRAME)
     {
       if (frameType == WS_INCOMPLETE_FRAME)
+      {
         printf("buffer too small");
+      }
       else
+      {
         printf("error in incoming frame\n");
+      }
 
       if (state == WS_STATE_OPENING)
       {
@@ -186,13 +198,6 @@ void *clientWorker(void *param)
       assert(frameType == WS_OPENING_FRAME);
       if (frameType == WS_OPENING_FRAME)
       {
-        // if resource is right, generate answer handshake and send it
-        // if (strcmp(hs.resource, "/echo") != 0)
-        // {
-        //   frameSize = sprintf((char *)ths->gBuffer, "HTTP/1.1 404 Not Found\r\n\r\n");
-        //   safeSend(ths, ths->gBuffer, frameSize);
-        //   break;
-        // }
         char *route = hs.resource;
         prepareBuffer;
         wsGetHandshakeAnswer(&hs, ths->gBuffer, &frameSize);
@@ -201,8 +206,16 @@ void *clientWorker(void *param)
 
         if (strcmp(route, "/checkin") == 0)
         {
-          char msg[13] = "you are host";
-          sendMsg(ths, ths->gBuffer, frameSize, msg);
+          if(!hostExist)
+          {
+            hostID = ths->clientAddr.sin_port;
+            hostExist = true;
+            printf("host is >>>>%d\n", ntohs(hostID));
+            sendMsg(ths, ths->gBuffer, "you are host");
+          }else
+          {
+            sendMsg(ths, ths->gBuffer, "host already exist");
+          }
         }
 
         freeHandshake(&hs);
@@ -236,28 +249,25 @@ void *clientWorker(void *param)
           int i = 0;
           while(!isStop)
           {
-            
             i++;
             uint8_t *recievedString = NULL;
             //タイムスタンプ
             int timestamp = i;
             //値
             int value = i;
-
             char sendMsg[100];
-
             sprintf(sendMsg, "{\"timestamp\":%d,\"value\":%d}", timestamp, value );
-
             size_t len = strlen(sendMsg);
-
             recievedString = (uint8_t *)malloc(len + 1);
-            assert(recievedString);
+            // assert(recievedString);
             memcpy(recievedString, (uint8_t *)sendMsg, len);
-            recievedString[len] = 0;
+            // recievedString[len] = 0;
             prepareBuffer;
             wsMakeFrame(recievedString, len, ths->gBuffer, &frameSize, WS_TEXT_FRAME);
+            
+            // safeSendAll(ths->gBuffer, frameSize);
+            sendMsgToAll(ths->gBuffer, len, (char *)recievedString);
             free(recievedString);
-            safeSendAll(ths->gBuffer, frameSize);
             initNewFrame;
             usleep(30000);
           }
@@ -266,13 +276,15 @@ void *clientWorker(void *param)
         {
           isStop = true;
         }
-        
         initNewFrame;
       }
     }
   } // read/write cycle
   printf("disconnected %s:%d\n", inet_ntoa(ths->clientAddr.sin_addr), ntohs(ths->clientAddr.sin_port));
-
+  if (hostID == ths->clientAddr.sin_port) {
+    printf("There is no host\n");
+    hostExist = false;
+  }
   close(ths->clientSocket);
   free(ths->gBuffer);
   list_del(&ths->list);
@@ -280,3 +292,4 @@ void *clientWorker(void *param)
   pthread_exit(NULL);
   return NULL;
 }
+///////////////////////////////////////////////////////////////////////////////////////////////////////
