@@ -9,24 +9,41 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <errno.h>
+// #include <errno.h>
 #include <pthread.h>
-#include <inttypes.h>
+// #include <inttypes.h>
+#include <chrono>
+#include <thread>
+
+#include <cmath>
+#include <iostream>
+// #include<math.h>
+
 #include "func.h"
 
 
 #define PACKET_DUMP
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 LIST_HEAD(sock_list);
 WEBSOCKET_PARAM *sock = NULL;
 int sock_count = 0;
 int listenSocket = 0;
 bool isContinue = false;
 bool isStop = false;
-bool nowProcessing = false;
-bool hostExist = false;
-
+bool isProcess = false;
+bool hostExists = false;
 in_port_t hostID;
+struct	tm*	tm_time;
+struct timespec ts;
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+void GET_TIME()
+{
+	uint64_t	TIME_PC;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	TIME_PC  = (uint64_t)ts.tv_nsec / 1000000;	//ms
+	TIME_PC += (uint64_t)ts.tv_sec * 1000;		//sec
+	tm_time = localtime(&ts.tv_sec);			  		//tm?^?????
+}
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
 void error(const char *msg)
 {
@@ -56,11 +73,6 @@ void handler(int signo)
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
 int safeSend(WEBSOCKET_PARAM *param, const uint8_t *buffer, size_t bufferSize)
 {
-#ifdef PACKET_DUMP
-  printf("out packet:\n");
-  fwrite(buffer, 1, bufferSize, stdout);
-  printf("\n");
-#endif
   pthread_mutex_lock(&param->ws_mutex);
   ssize_t written = send(param->clientSocket, buffer, bufferSize, 0);
   pthread_mutex_unlock(&param->ws_mutex);
@@ -87,28 +99,42 @@ void safeSendAll(const uint8_t *buffer, size_t bufferSize)
   }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
-int sendMsg(WEBSOCKET_PARAM *param, const uint8_t *buffer , const char *msg)
+int sendMsg(WEBSOCKET_PARAM *param, const uint8_t *buffer, const char *msg)
 {
   size_t frameSize = BUF_LEN;
   memset(param->gBuffer, 0, BUF_LEN);
-
-  size_t len = strlen(msg);
-  wsMakeFrame((uint8_t *)msg, len, param->gBuffer, &frameSize, WS_TEXT_FRAME);
-  return safeSend(param, buffer, frameSize);
+  wsMakeFrame((uint8_t *)msg, strlen(msg), param->gBuffer, &frameSize, WS_TEXT_FRAME);
+  pthread_mutex_lock(&param->ws_mutex);
+  ssize_t written = send(param->clientSocket, buffer, frameSize, 0);
+  pthread_mutex_unlock(&param->ws_mutex);
+  if (written == -1)
+  {
+    return EXIT_FAILURE;
+  }
+  if (written != frameSize)
+  {
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
-void sendMsgToAll(const uint8_t *buffer, size_t bufferSize, char *msg)
-{
+void sendMsgToALL(WEBSOCKET_PARAM *param, const char *msg)
+{ 
+  size_t frameSize = BUF_LEN;
+  memset(param->gBuffer, 0, BUF_LEN);
+  size_t len = strlen(msg);
+  wsMakeFrame((uint8_t *)msg, len, param->gBuffer, &frameSize, WS_TEXT_FRAME);
   WEBSOCKET_PARAM *data, *dend;
   list_for_each_entry_safe(data, dend, &sock_list, list)
   {
-    if (sendMsg(data, buffer, msg) != EXIT_SUCCESS)
+    if (safeSend(data, param->gBuffer, frameSize) != EXIT_SUCCESS)
     {
       data->isContinue = false;
     }
   }
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void *clientWorker(void *param)
 {
   WEBSOCKET_PARAM *ths = (WEBSOCKET_PARAM *)param;
@@ -130,7 +156,7 @@ void *clientWorker(void *param)
   frameType = WS_INCOMPLETE_FRAME; \
   readedLength = 0;                \
   memset(ths->gBuffer, 0, BUF_LEN);
-
+  
   while (isContinue && ths->isContinue && (frameType == WS_INCOMPLETE_FRAME))
   {
     ssize_t readed = recv(ths->clientSocket, ths->gBuffer + readedLength, BUF_LEN - readedLength, MSG_DONTWAIT);
@@ -145,11 +171,6 @@ void *clientWorker(void *param)
       usleep(1000);
       continue;
     }
-#ifdef PACKET_DUMP
-    printf("in packet:\n");
-    fwrite(ths->gBuffer, 1, readed, stdout);
-    printf("\n");
-#endif
     readedLength += readed;
     assert(readedLength <= BUF_LEN);
 
@@ -161,16 +182,13 @@ void *clientWorker(void *param)
     {
       frameType = wsParseInputFrame(ths->gBuffer, readedLength, &data, &dataSize);
     }
+
     if ((frameType == WS_INCOMPLETE_FRAME && readedLength == BUF_LEN) || frameType == WS_ERROR_FRAME)
     {
       if (frameType == WS_INCOMPLETE_FRAME)
-      {
         printf("buffer too small");
-      }
       else
-      {
         printf("error in incoming frame\n");
-      }
 
       if (state == WS_STATE_OPENING)
       {
@@ -198,26 +216,10 @@ void *clientWorker(void *param)
       assert(frameType == WS_OPENING_FRAME);
       if (frameType == WS_OPENING_FRAME)
       {
-        char *route = hs.resource;
         prepareBuffer;
         wsGetHandshakeAnswer(&hs, ths->gBuffer, &frameSize);
         safeSend(ths, ths->gBuffer, frameSize);
         state = WS_STATE_NORMAL;
-
-        if (strcmp(route, "/checkin") == 0)
-        {
-          if(!hostExist)
-          {
-            hostID = ths->clientAddr.sin_port;
-            hostExist = true;
-            printf("host is >>>>%d\n", ntohs(hostID));
-            sendMsg(ths, ths->gBuffer, "you are host");
-          }else
-          {
-            sendMsg(ths, ths->gBuffer, "host already exist");
-          }
-        }
-
         freeHandshake(&hs);
         initNewFrame;
       }
@@ -240,56 +242,97 @@ void *clientWorker(void *param)
       }
       else if (frameType == WS_TEXT_FRAME)
       {
-        char stop_str[5] = "stop";
-        char go_str[3] = "go";
-        if (strcmp((char *)go_str, (char *)data) == 0 && !nowProcessing)
+        // msg =>>>> run
+        if (strcmp("run", (char *)data) == 0 && !isProcess)
         {
           isStop = false;
-          nowProcessing = true;
-          int i = 0;
+          isProcess = true;
+          sendMsg(ths, ths->gBuffer, "{\"type\":\"isProcess\",\"value\":true}");
+
+          std::chrono::system_clock::time_point start, end;
+          start = std::chrono::system_clock::now();
+          char msg[60];
+
+          double degree = 0.0;
+          double ff = M_PI / 180.0;
           while(!isStop)
           {
-            i++;
-            uint8_t *recievedString = NULL;
-            //タイムスタンプ
-            int timestamp = i;
-            //値
-            int value = i;
-            char sendMsg[100];
-            sprintf(sendMsg, "{\"timestamp\":%d,\"value\":%d}", timestamp, value );
-            size_t len = strlen(sendMsg);
-            recievedString = (uint8_t *)malloc(len + 1);
-            // assert(recievedString);
-            memcpy(recievedString, (uint8_t *)sendMsg, len);
-            // recievedString[len] = 0;
-            prepareBuffer;
-            wsMakeFrame(recievedString, len, ths->gBuffer, &frameSize, WS_TEXT_FRAME);
-            
-            // safeSendAll(ths->gBuffer, frameSize);
-            sendMsgToAll(ths->gBuffer, len, (char *)recievedString);
-            free(recievedString);
+            // end = std::chrono::system_clock::now();
+            sprintf(msg, "{\"type\":\"data\",\"timestamp\":%.5f,\"value\":%.5f}"
+              , static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now()-start).count())/1000000000///1000
+              , sin(degree * ff)
+            );
+            degree += 0.5;
+            // sendMsgToALL(ths,msg);
+            sendMsg(ths, ths->gBuffer, msg);
             initNewFrame;
-            usleep(30000);
+            usleep(50);
+            // usleep(9000);
           }
-          nowProcessing = false;
-        }else if (strcmp((char *)stop_str, (char *)data) == 0)
+          isProcess = false;
+          sendMsg(ths, ths->gBuffer, "{\"type\":\"isProcess\",\"value\":false}");
+        }
+        // msg =>>>> stop
+        if (strcmp("stop", (char *)data) == 0)
         {
           isStop = true;
+          printf("stop\n");
+        }
+        // msg =>>>> beHost [send: hostExist, isHsot] [change: hostID, hostExist]
+        if (strcmp("beHost", (char *)data) == 0)
+        {
+          if(!hostExists){
+            hostExists = true;
+            hostID = ths->clientAddr.sin_port;
+            sendMsgToALL(ths, "{\"type\":\"hostExists\",\"value\":true}");
+            sendMsg(ths, ths->gBuffer, "{\"type\":\"isHost\",\"value\":true}");
+          }else{
+            sendMsg(ths, ths->gBuffer, "{\"type\":\"isHost\",\"value\":false}");
+          }
+        }
+        // msg =>>>> beGuest [send: isGuest]
+        if (strcmp("beGuest", (char *)data) == 0)
+        {
+          sendMsg(ths, ths->gBuffer, "{\"type\":\"isGuest\",\"value\":true}");
+        }
+        // msg =>>>> resignHost [send: notHost, hostExists]
+        if (strcmp("resignHost", (char *)data) == 0)
+        {
+          if(hostExists){
+            hostExists = false;
+            sendMsg(ths, ths->gBuffer, "{\"type\":\"notHost\",\"value\":true}");
+            sendMsgToALL(ths, "{\"type\":\"hostExists\",\"value\":false}");
+          }else{
+            sendMsg(ths, ths->gBuffer, "{\"type\":\"notHost\",\"value\":false}");
+          }
+        }
+        // msg =>>>> checkServer [send: hostExists, isProcess]
+        if (strcmp("checkServer", (char *)data) == 0)
+        {
+          char msg2[50];
+          sprintf(msg2, "{\"type\":\"hostExists\",\"value\":%d}",hostExists);
+          sendMsg(ths, ths->gBuffer, msg2);
+          char msg3[50];
+          sprintf(msg3, "{\"type\":\"isProcess\",\"value\":%d}",isProcess);
+          sendMsg(ths, ths->gBuffer, msg3);
         }
         initNewFrame;
       }
     }
   } // read/write cycle
   printf("disconnected %s:%d\n", inet_ntoa(ths->clientAddr.sin_addr), ntohs(ths->clientAddr.sin_port));
-  if (hostID == ths->clientAddr.sin_port) {
-    printf("There is no host\n");
-    hostExist = false;
-  }
+  bool sendHostQuit = false;
+  if (hostID ==  ths->clientAddr.sin_port)sendHostQuit = true;
   close(ths->clientSocket);
   free(ths->gBuffer);
   list_del(&ths->list);
   free(ths);
+  if (sendHostQuit) {
+    printf("There is no host\n");
+    hostExists = false;
+    // sendMsgToALL(ths, "{\"hostExists\":false}");
+    sendMsgToALL(ths, "{\"type\":\"hostExists\",\"value\":false}");
+  }
   pthread_exit(NULL);
   return NULL;
 }
-///////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -14,7 +14,6 @@
 
 #include "func.h"
 
-
 #define PORT 8088
 
 int main()
@@ -50,7 +49,6 @@ int main()
     {
       error("listen failed");
     }
-
     printf("waiting connection\n");
     while (isContinue)
     {
